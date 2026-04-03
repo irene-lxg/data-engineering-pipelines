@@ -1,0 +1,550 @@
+---
+title: '2011'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r package, include=FALSE}
+library(readxl)
+library(dplyr)
+library(sjmisc)
+library(tidyverse)
+library(janitor)
+library(hms)
+library(plyr)
+library(data.table)
+library(lubridate)
+library(schoolmath)
+library(readxl)
+library(writexl)
+library(stringr)
+```
+
+```{r}
+X15_Dec_11_am <- X15_Dec_11
+
+```
+
+```{r}
+colnames(X15_Dec_11_am)
+```
+
+```{r}
+X15_Dec_11_am <- X15_Dec_11_am %>% 
+  clean_names()
+```
+
+```{r}
+# rename time
+names(X15_Dec_11_am) = sub('time', 'St.Time', names(X15_Dec_11_am))
+colnames(X15_Dec_11_am)
+```
+
+
+```{r}
+# Starttime
+X15_Dec_11_am <- X15_Dec_11_am %>% 
+  mutate(St.Time = as_hms(St.Time),
+         End.Time = St.Time)
+```
+```{r}
+# Endtime
+X15_Dec_11_am <- X15_Dec_11_am %>% 
+  mutate(End.Time = ifelse(grepl('End', behavior_category), End.Time, NA))
+X15_Dec_11_am <- X15_Dec_11_am %>% 
+  mutate(End.Time = as_hms(End.Time))
+```
+
+```{r}
+#check NA values
+X15_Dec_11_am %>% 
+  filter(is.na(behavior_category))
+```
+
+
+```{r}
+# traversal checking lines following
+
+try1 <- X15_Dec_11_am %>% 
+  filter(!is.na(behavior_category)) %>% 
+  dplyr::mutate(behavior_category = case_when(row_number()==276 ~ "Dig; End (+ Modifiers ->)", 
+                                              # replace misrecorded value                      
+                                              grepl("Out of view", behavior_category) & !grepl("End", behavior_category) ~ "Out of view",  
+                                              grepl("renn", behavior_category) & !grepl("End", behavior_category) ~ "renovation",
+                                              grepl("Burr/BH"|"burrow/bolthole", behavior_category) & !grepl("End", behavior_category) ~ "Burr/BH",
+                                       TRUE ~ behavior_category))
+
+unique(try1$behavior_category)
+pattern <- c("GA","Dig", "GT", "In Burr/BH","Out of view", "Pred. alarm", "groom", "huddle", "renn") # to add according to data sets
+Pattern = paste(pattern, collapse="|")
+```
+
+
+```{r}
+# reorder chronologically
+try1 <- try1 %>% 
+  arrange(St.Time)
+```
+
+
+
+```{r}
+# Add end time for GA/Dig
+j = 0
+for (i in 1:(nrow(try1)-1)) { # for every row:
+  
+  if (try1[i,]$behavior_category %in% c("GA", "Dig")) { # if there's a GA or Dig,
+    
+    j = i+1 # then start from the next row
+    
+    while (j <= (nrow(X15_Dec_11_am)-1)) {
+      if (grepl(try1[i,]$behavior_category, try1[j,]$behavior_category) || # if the name of the behavior in row i appears in the string in row j, 
+          grepl("End focal", try1[j,]$behavior_category)) { # or if it's an end of focal,
+        break # then terminate the while loop
+      }
+      j = j+1 # loop counter
+    }
+    
+    if (try1[j,]$behavior_category == try1[i,]$behavior_category ||  # if another same behavior comes first,
+        grepl("End focal", try1[j,]$behavior_category)) { # or the focal end,
+          try1[nrow(try1) + 1,] = try1[i,] %>% mutate( # then add a new row with:
+          St.Time = try1[i,]$St.Time + 1, # time 1 s later
+          behavior_category = str_c(try1[i,]$behavior_category, "; End") # end of the D behavior in row i
+        )
+    } # else there's an end of that behavior in a cell some row(s) below (row j)
+  }
+}
+
+# 两个D behavior不能同时发生，code完End.Time column后再比较前后两个D behavior的结束-开始时间，若开始早于结束则set结束=开始
+
+try1 <- try1 %>% 
+  arrange(St.Time)
+try2 <- try1
+```
+
+```{r}
+# Add end time for other duration behaviors
+for (i in 1:(nrow(try2)-1)) { # for every row:
+  
+  if (try2[i,]$behavior_category %in% pattern &&
+      !try2[i,]$behavior_category %in% c("GA", "Dig")) { 
+      # if there's a duration behavior other than GA or Dig
+    j = i+1
+    while (j <= (nrow(try1)-1)) {
+      if (grepl(Pattern, try2[j,]$behavior_category) ||# if the name of any D behavior appears in the string,
+          grepl("End", try2[j,]$behavior_category)) {# or if there's an end of something
+          break
+        }
+      j = j + 1
+    }
+    
+    if (try2[j,]$behavior_category %in% pattern || grepl("End focal", try2[j,]$behavior_category)) {
+        # if first comes a D behavior other than the one in row i, or if first comes the focal end
+      try2[nrow(try2) + 1,] = try2[i,] %>% mutate( # then add a new row with:
+          St.Time = try2[i+1,]$St.Time, # time of next line (either next behavior or focal end)
+          behavior_category = str_c(try2[i,]$behavior_category, "; End") # end of the D behavior in row i
+        )
+    }
+  }
+}
+
+try2 <- try2 %>% 
+  arrange(St.Time)
+
+```
+
+```{r}
+try2 %>% 
+  filter(behavior_category=="End(+Modifiers)")
+```
+
+```{r}
+# delete duplicated ends
+
+for (i in nrow(try2):2) {
+  if (grepl("End", try2[i,]$behavior_category) && try2[i,]$behavior_category == try2[i-1,]$behavior_category 
+      && is.na(try2[i,]$modifiers)) {
+    try2 <- try2[-i,]
+  }
+}
+```
+
+
+```{r}
+# see which rows has "End" but no end time (newly added rows)
+try2 %>% 
+  filter(grepl("End", try2$behavior_category) && is.na(End.Time))
+```
+
+```{r}
+# Add end time to newly added rows
+try2 <- try2 %>% 
+  mutate(End.Time = ifelse(grepl('End', behavior_category), St.Time, NA))
+try2 <- try2 %>% 
+  mutate(End.Time = as_hms(End.Time))
+```
+
+```{r}
+# Merge St and End time to the same row
+for (i in 1:nrow(try2)) {
+  if (try2[i,]$behavior_category %in% pattern) {
+    for (j in (i+1):nrow(try2)) {
+      if (grepl(try2[i,]$behavior_category, try2[j,]$behavior_category) &&
+        grepl("End", try2[j,]$behavior_category)) {
+          try2[i,]$End.Time = try2[j,]$End.Time
+          break
+      }
+      j = j + 1
+    }
+  }
+}
+```
+
+
+
+```{r}
+# Duration in seconds
+try2 <- try2 %>% 
+  mutate(S.Duration = as.numeric(End.Time - St.Time))
+```
+
+
+```{r}
+# Dig with modifier
+modi <- c("tiny", "small", "medium", "large")
+Modi = paste(modi, collapse="|")
+quant <- c("1","2","<5")
+Quant <- paste(quant, collapse="|")
+
+try2 <- try2 %>% 
+  mutate(modifiers = tolower(modifiers))
+
+for (i in 1:nrow(try2)) {
+  if (grepl("Dig; End", try2[i,]$behavior_category) && (is.na(try2[i,]$modifiers || !grepl(Modi, try2[i,]$modifiers)))) {
+    for (j in (i+1):nrow(try2)) {
+      if (grepl(Pattern, try2[j,]$behavior_category) || try2[j,]$behavior_category=="End (+Modifiers)") {
+        break
+      }
+    }
+    
+    if (try2[j,]$behavior_category=="End (+Modifiers)" && grepl(Modi, try2[j,]$modifiers)) {
+      try2[j,]$behavior_category = "Dig"
+      try2[i,]$modifiers = "success"
+    }
+  }
+} 
+
+
+for (i in 1:nrow(try2)) { 
+  if (grepl("Dig; End", try2[i,]$behavior_category) && grepl(Modi, try2[i,]$modifiers)) {
+    for (j in 1:3) {
+      if (try2[i+j,]$behavior_category=="End (+Modifiers)") {
+        if (j == 1) {
+          try2[i+j,]$behavior_category = "Dig"
+        }
+        else if (j == 2) {
+          if (grepl("Other vig | Near. neigh", try2[i+1,]$behavior_category)) {
+            try2[i+j,]$behavior_category = "Dig" 
+          }
+        }
+        else {
+          if (grepl("Other vig | Near. neigh", try2[i+1,]$behavior_category) && 
+              grepl("Other vig | Near. neigh", try2[i+2,]$behavior_category)) {
+            try2[i+j,]$behavior_category = "Dig"  
+          }
+        }
+      }
+    } 
+  }
+}
+
+for (i in 1:nrow(try2)) {
+  if (try2[i,]$behavior_category=="End (+Modifiers)" && grepl(Modi, try2[i,]$modifiers)) {
+    if (!grepl("tiny", try2[i,]$modifiers)) {
+      try2[i,]$behavior_category = str_c("fa.", str_extract(try2[i,]$modifiers, Modi))
+    } 
+    else {
+      s <- str_split(try2[i,]$modifiers, split = ";")
+      if (Quant %in% s) {
+        try2[i,]$behavior_category = str_c("fa.", str_extract(try2[i,]$modifiers, Modi), ".few")
+      } 
+      else {
+        try2[i,]$behavior_category = str_c("fa.", str_extract(try2[i,]$modifiers, Modi), ".many")
+      }
+    }
+  }
+}
+  
+for (i in 1:nrow(try2)) { 
+  # if 2 sizes, 2 rows (not implemented!)
+  if (grepl("Dig|dig", try2[i,]$behavior_category) && grepl(Modi, try2[i,]$modifiers)) {
+    if (!grepl("tiny", try2[i,]$modifiers)) {
+      try2[i,]$behavior_category = str_c("d.", str_extract(try2[i,]$modifiers, Modi))
+    } 
+    else {
+      s <- str_split(try2[i,]$modifiers, split = ";")
+      if (Quant %in% s) {
+        try2[i,]$behavior_category = str_c("d.", str_extract(try2[i,]$modifiers, Modi), ".few")
+      } 
+      else {
+        try2[i,]$behavior_category = str_c("d.", str_extract(try2[i,]$modifiers, Modi), ".many")
+      }
+    }
+  }
+}
+```
+
+```{r}
+try3 <- try2 %>% 
+  select(where(no_na)) %>% 
+  mutate(A.RA = NA, I.R = NA)
+  
+```
+
+```{r}
+#	Category Behavior 
+cate <- c("aggr", "olfac", "pup", "play")
+Cate= paste(cate, collapse="|")
+cols <- names(try3)[grepl(Cate, names(try3))]
+for (i in 1:nrow(try3)) {
+  if (grepl(Cate, try3[i,]$behavior_category)) {
+    s <- str_match(try3[i,]$behavior_category, Cate)
+    if (s == "pup") {
+      try3[i,]$I.R = "Initiate"
+      try3[i,]$behavior_category = "i.feed"
+      rep <- try3[i,grepl(s, names(try3))][[1]]
+      if (!grepl("tiny", rep)) {
+        try3[nrow(try3) + 1,] = try3[i,] %>% 
+          mutate( behavior_category = str_c("f.", str_extract(rep, Modi)))
+      }
+      else {
+        c <- str_split(rep, split = ";")
+        if (Quant %in% c) {
+          try3[nrow(try3) + 1,] = try3[i,] %>% 
+            mutate(behavior_category = str_c("f.", str_extract(rep, Modi), ".few"))
+        } 
+        else {
+          try3[nrow(try3) + 1,] = try3[i,] %>% 
+            mutate(behavior_category = str_c("f.", str_extract(rep, Modi), ".many"))
+        }
+      }
+    }
+    else {
+      for (j in ncol(try3)) {
+        if (grepl(s, names(try3[,j]))) {
+          try3[i,]$behavior_category = names(try3[,j])
+        }
+      
+      }
+      
+    }
+  }
+}
+
+try4 <- try3 %>% 
+  arrange(St.Time)
+```
+
+
+```{r}
+# foodcomp
+# get rid of approach first
+success <- c("win", "lose", "unclear.win")
+Success= paste(success, collapse="|")
+for (i in 1:nrow(try4)) {
+  if (grepl("fcomp", tolower(try4[i,]$modifiers))) {
+    l <- str_split(try4[i,]$modifiers, ";")
+    s <- str_match(try4[i,]$modifiers, Success)
+    if(grepl("receive fcomp", tolower(try4[i,]$modifiers))) { #only in modifiers column?
+      try4[i,]$behavior_category = "r.fc"
+      try4[i,]$I.R = "Receive"
+    }
+    if(grepl("initiate fcomp", tolower(try4[i,]$modifiers))) {
+      try4[i,]$behavior_category = "i.fc"
+      try4[i,]$I.R = "Initiate"
+    }
+    if (!is.na(s)) {
+      try3[nrow(try4) + 1,] = try4[i,] %>% 
+              mutate(behavior_category = str_c(try4[i,]$behavior_category, ".", s))  
+    }
+    
+  }
+}
+```
+
+
+```{r}
+# Approach/Receive/Initiate
+# How to deal with "Approach ->" in behavior_category, nothing's left when removing "approach"
+# implement for all cols
+for (i in 1:nrow(try3)) {
+  if (grepl("Approach", try3[i,]$behavior_category)) {
+    try3[i,]$A.RA = "Approach"
+    try3[i,]$behavior_category =  gsub('Approach; ', '', try3[i,]$behavior_category)
+  }
+  if (grepl("Receive Approach", try3[i,]$behavior_category)) {
+    try3[i,]$A.RA = "Receive Approach"
+    try3[i,]$behavior_category =  gsub('Receive Approach; ', '', try3[i,]$behavior_category)
+  }
+  if (grepl("Initiate", try3[i,]$w_partner_s)) {
+    try3[i,]$I.R = "Initiate"
+    try3[i,]$w_partner_s =  gsub('Initiate; ', '', try3[i,]$w_partner_s)
+    try3[i,]$behavior_category = str_c("i.", tolower(try3[i,]$behavior_category))
+  }
+  if (grepl("Receive", try3[i,]$w_partner_s)) {
+    try3[i,]$I.R = "Receive"
+    try3[i,]$w_partner_s =  gsub('Receive; ', '', try3[i,]$w_partner_s)
+    try3[i,]$behavior_category = str_c("r.", tolower(try3[i,]$behavior_category))
+  }
+  if (grepl("Reciprocate", try3[i,]$w_partner_s)) {
+    try3[i,]$I.R = "Initiate"
+    try3[i,]$w_partner_s =  gsub('Reciprocate; ', '', try3[i,]$w_partner_s)
+    try3[i,]$behavior_category = str_c("i.", tolower(try3[i,]$behavior_category))
+    try3[nrow(try3) + 1,] = try3[i,] %>% mutate(
+        I.R = "Receive",
+        behavior_category = str_c("r.", tolower(try3[i,]$behavior_category))
+        )
+  }
+}
+
+
+try4 <- try3 %>% 
+  arrange(St.Time)
+```
+
+```{r}
+# Multiple components, including fc
+for (i in 1:nrow(try4)) {
+  l <- str_split(try4[i,]$modifiers, ";")
+  if (length(l)>1) {
+    # keep the first value in the original row and others in each added row
+    try4[i]$modifiers = l[1]
+    for (j in 2:length(l)) {
+      try4[nrow(try4) + 1,] = try4[i,] %>% mutate(
+        modifiers = l[j]
+      )
+    }
+  }
+}
+
+try5 <- try4 %>% 
+  arrange(St.Time)
+```
+
+```{r}
+# Receive/Initiate for modifiers etc.
+for (i in 1:nrow(try5)) {
+  if (grepl("Initiate", try5[i,]$modifiers)) {
+    try5[i,]$I.R = "Initiate"
+    try5[i,]$behavior_category = str_c("i.", tolower(try5[i,]$modifiers))
+    try5[i,]$modifiers = ""
+  }
+  if (grepl("Receive", try5[i,]$modifiers)) {
+    try5[i,]$I.R = "Receive"
+    try5[i,]$behavior_category = str_c("r.", tolower(try5[i,]$modifiers))
+    try5[i,]$modifiers = ""
+  }
+  if (grepl("Reciprocate", try5[i,]$modifiers)) {
+    try5[i,]$I.R = "Initiate"
+    try5[i,]$behavior_category = str_c("i.", tolower(try5[i,]$modifiers))
+    try5[i,]$modifiers = ""
+    try5[nrow(try5) + 1,] = try5[i,] %>% mutate(
+        I.R = "Receive",
+        behavior_category = str_c("r.", tolower(try5[i,]$modifiers))
+        )
+  }
+}
+
+try6 <- try5 %>% 
+  arrange(St.Time)
+```
+
+
+
+
+
+```{r eval=FALSE}
+# remove "end" rows with no modifier (DO NOT RUN NOW)
+
+for (i in 1:nrow(try2)) {
+  if (grepl("End", try2[i,]$behavior_category) && is.na(try2[i,]$modifiers)) {
+    try2 <- try2[-i,]
+  }
+}
+```
+
+
+
+```{r}
+# check consecutive "End"s
+which(grepl("End", try1$behavior_category))
+```
+
+```{r}
+# check which rows were removed
+t1 <- try1[2]
+t2 <- try2[2]
+setdiff(t1,t2)
+```
+
+
+```{r}
+unique(try1$behavior_category)
+```
+
+```{r}
+X15_Dec_11_am %>% 
+  filter(behavior_category == "GT; End (+ Modifiers ->)")
+X15_Dec_11_am %>% 
+  filter(behavior_category == "Out of view; Olfactory ->")
+X15_Dec_11_am %>% 
+  filter(behavior_category == "Olfactory ->")
+X15_Dec_11_am %>% 
+  filter(grepl("Pred. alarm", behavior_category))
+```
+
+
+```{r}
+X15_Dec_11_am[1,]$behavior_category
+dim(X15_Dec_11_am)[1]
+```
+
+```{r}
+endf <- which(X15_Dec_11_am$behavior_category=="End focal ->")
+```
+```{r}
+X15_Dec_11_am[endf-1,]
+```
+
+
+```{r focal end time}
+part4 <- part3 %>% 
+  filter(!is.na(date), !is.na(observer), !is.na(groups)) %>% 
+  arrange(date, groups, observer, St.Time) %>% 
+  mutate(St.Time = as_hms(St.Time),
+         End.Time = as_hms(End.Time))
+for (i in 1:nrow(part4)) {
+  if (grepl('start', part4[i,]$behavior_category)) {
+    for (j in (i+1):nrow(part4)) {
+      if (grepl('focal', part4[j,]$behavior_category)) {
+        break
+      }
+    }
+    if (grepl('end focal', part4[j,]$behavior_category)) {
+      part4[i,]$End.Time = part4[j,]$End.Time
+    }
+    else {
+      part4[i,]$End.Time = as_hms(part4[j,]$St.Time - 1)
+    }
+  }
+  print(i)
+}
+```
+```{r}
+part5 <- part4 %>% 
+  filter(grepl('start focal', behavior_category))
+```
+
